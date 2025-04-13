@@ -84,6 +84,9 @@ catch {
 
 # -- 2. 出力先ディレクトリの確認 --
 $outputDir = Split-Path -Path $OutputFile -Parent
+if ([string]::IsNullOrEmpty($outputDir)) {
+    $outputDir = '.'
+}
 if (-not (Test-Path -Path $outputDir -PathType Container)) {
     Write-Verbose "出力ディレクトリ '$outputDir' が存在しないため作成します。"
     try {
