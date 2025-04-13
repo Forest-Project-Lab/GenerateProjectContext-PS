@@ -6,16 +6,21 @@
 このスクリプトは、指定されたディレクトリを再帰的に探索し、
 ファイル構造とテキストベースのファイルの内容を一つのMarkdownファイルにまとめます。
 特定のファイルやディレクトリを除外したり、特定のファイルのみを含めたり、
-バイナリファイルを除外したりするオプションがあります。
+巨大ファイルやバイナリファイルを省略したりするオプションがあります。
 
-.PARAMETER Path
+- ファイルが 1MB 超の場合は「// File content omitted because it exceeds 1MB」を表示。
+- ファイルが 1MB 以下の場合は先頭4KBをバイナリ読み込み・UTF8デコードして制御文字の割合をチェック。
+  - デコード不可 or 制御文字が 10%以上なら「// Omitted content for non-text file: ...」と省略。
+  - 問題なければ全文テキスト出力。
+
+PARAMETER Path
 (必須) 情報を収集するルートディレクトリのパス。
 
 .PARAMETER OutputFile
 (必須) 結果を出力するMarkdownファイルへのパス。
 
 .PARAMETER Exclude
-除外するファイルまたはディレクトリのパターン（ワイルドカード使用可）。複数指定可能。
+除外するファイルまたはディレクトリのパターン（ワイルドカード可）。複数指定可能。
 例: "node_modules", "*.log", "dist/"
 
 .PARAMETER IgnoreFile
@@ -42,7 +47,7 @@
 Author: Forest-Project-Lab
 Date: 2025-04-13
 文字コードは UTF-8 (BOM 無し) としてファイルを読み書きします。
-巨大なファイル(デフォルト1MB超)はパフォーマンスと出力サイズのため内容は省略されます。
+巨大なファイル(デフォルト1MB超)は内容を省略します。
 ファイル構造のツリー表示は簡易的なものです。
 #>
 [CmdletBinding()]
@@ -70,12 +75,27 @@ Write-Verbose "スクリプトを開始します。Path: '$Path', OutputFile: '$
 
 # -- 1. 入力パスの確認 --
 try {
-    $absolutePath = (Resolve-Path -Path $Path -ErrorAction Stop).Path
+    # Resolve-Path で絶対パスを取得
+    $resolvedPath = Resolve-Path -Path $Path -ErrorAction Stop
+    $absolutePath = $resolvedPath.Path
+
     if (-not (Test-Path -Path $absolutePath -PathType Container)) {
         Write-Error "'$Path' は有効なディレクトリではありません。"
         exit 1
     }
-    Write-Verbose "ルートパスの絶対パス: '$absolutePath'"
+
+    # 末尾の \ / を除去してから統一的に追加
+    $absolutePath = $absolutePath.TrimEnd('\','/')
+    if (-not $absolutePath.EndsWith('\')) {
+        $absolutePath += '\'
+    }
+
+    # 比較用に小文字化した文字列を用意
+    $absolutePathLower = $absolutePath.ToLower()
+
+    Write-Verbose "ルートパスの絶対パス(整形後): '$absolutePath'"
+    Write-Verbose "ルートパス(小文字化) : '$absolutePathLower'"
+
 }
 catch {
     Write-Error "指定されたパス '$Path' の解決中にエラーが発生しました: $($_.Exception.Message)"
@@ -85,7 +105,7 @@ catch {
 # -- 2. 出力先ディレクトリの確認 --
 $outputDir = Split-Path -Path $OutputFile -Parent
 if ([string]::IsNullOrEmpty($outputDir)) {
-    $outputDir = '.'
+    $outputDir = '.'  # カレントディレクトリ扱い
 }
 if (-not (Test-Path -Path $outputDir -PathType Container)) {
     Write-Verbose "出力ディレクトリ '$outputDir' が存在しないため作成します。"
@@ -96,6 +116,17 @@ if (-not (Test-Path -Path $outputDir -PathType Container)) {
         Write-Error "出力ディレクトリ '$outputDir' の作成に失敗しました: $($_.Exception.Message)"
         exit 1
     }
+}
+
+# -- 2.1 出力ファイルの絶対パスを取得（除外判定に利用） --
+try {
+    # ディレクトリまでのパスはすでに存在が確認できているので、手動で絶対パスを組み立てる
+    $absoluteOutputFile = Join-Path (Resolve-Path $outputDir) (Split-Path $OutputFile -Leaf)
+    Write-Verbose "出力ファイルの絶対パス: '$absoluteOutputFile'"
+}
+catch {
+    Write-Error "OutputFile '$OutputFile' の解決中にエラーが発生しました: $($_.Exception.Message)"
+    exit 1
 }
 
 # -- 3. 除外/包含パターンの準備 --
@@ -134,7 +165,7 @@ if ($PSBoundParameters.ContainsKey('IncludeOnly')) {
     Write-Verbose "-IncludeOnly パターン: $($includeOnlyPatterns -join ', ')"
 }
 
-# 一般的なバイナリ拡張子
+# -- 4. バイナリ除外用の拡張子定義 (必要な場合) --
 $binaryExtensions = @(
     ".exe", ".dll", ".so", ".dylib", ".bin", ".dat", ".obj", ".lib", ".a",
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".ico", ".webp",
@@ -148,11 +179,8 @@ $binaryExtensions = @(
     ".pyc", ".pyo",
     ".class"
 )
-if ($ExcludeBinary) {
-    Write-Verbose "バイナリファイルの拡張子を除外します。"
-}
 
-# -- 4. ファイル探索とフィルタリング --
+# -- 5. ファイル探索とフィルタリング --
 Write-Verbose "ファイル探索を開始します..."
 $allFilePaths = @()
 $allDirectoryPaths = @()
@@ -168,42 +196,36 @@ try {
     Write-Verbose "フィルタリング処理を開始します。対象アイテム数: $($items.Count)"
 
     foreach ($item in $items) {
+        # フルパス
         $currentItemPath = $item.FullName
+
+        # 出力ファイル自身は除外
+        if ($currentItemPath -eq $absoluteOutputFile) {
+            Write-Verbose "出力ファイル自身を除外: '$currentItemPath'"
+            continue
+        }
+
+        # ルート自身も除外
+        # (子孫を探した結果ルートに戻ることは通常ないが一応チェック)
         if ($currentItemPath -eq $absolutePath) {
-            continue # ルート自身は除外
+            continue
         }
 
-        # ここが変更点: substring + パス先頭の \ 削除 + .\ を付ける
-        # -----------------------------------------------------------------
-        if ($currentItemPath.StartsWith($absolutePath)) {
-            $relativePath = $currentItemPath.Substring($absolutePath.Length)
-        } else {
-            $relativePath = $currentItemPath
-        }
-        # remove leading \ or / if any
-        $relativePath = $relativePath -replace '^[\\/]+',''
-
-        if ($relativePath) {
-            # prepend .\ 
-            $relativePath = '.\' + $relativePath
-        } else {
-            # root case
-            $relativePath = '.'
-        }
-        # -----------------------------------------------------------------
-
-        $isContainer = $item.PSIsContainer
-        $isExcluded = $false
+        # 大小文字揃えたパスを作る
+        $currentItemPathLower = $currentItemPath.ToLower()
 
         # (a) デフォルト除外
+        $isExcluded = $false
         foreach ($defaultExclude in $defaultExcludes) {
-            # パス全体か名前が該当するかチェック
-            if (
-                $currentItemPath.Contains("\$defaultExclude\") -or
-                $currentItemPath.EndsWith("\$defaultExclude") -or
-                $item.Name -eq $defaultExclude
-            ) {
-                Write-Verbose "デフォルト除外: '$relativePath'"
+            # フォルダ名 or ファイル名単体での比較
+            if ($item.Name -eq $defaultExclude) {
+                Write-Verbose "デフォルト除外: '$currentItemPath'"
+                $isExcluded = $true
+                break
+            }
+            # 絶対パスに含む場合 (node_modulesなど)
+            if ($currentItemPathLower -like "*\$($defaultExclude.ToLower())\*") {
+                Write-Verbose "デフォルト除外(パス内): '$currentItemPath'"
                 $isExcluded = $true
                 break
             }
@@ -213,20 +235,21 @@ try {
         # (b) -Exclude パターン
         if ($PSBoundParameters.ContainsKey('Exclude')) {
             foreach ($excludePattern in $Exclude) {
-                if ($excludePattern -notmatch '[\\/]') {
-                    # ファイル名だけ比較
+                # パターンが区切り文字を含まない => ファイル名だけ比較
+                if ($excludePattern -notmatch '[\\/]' ) {
                     if ($item.Name -like $excludePattern) {
-                        Write-Verbose "-Exclude 名前一致: '$relativePath'"
+                        Write-Verbose "-Exclude 名前一致: '$currentItemPath'"
                         $isExcluded = $true
                         break
                     }
                 }
                 else {
                     # パス比較
-                    $normalizedRelativePath = $relativePath -replace '\\', '/'
-                    $normalizedExcludePattern = $excludePattern -replace '\\', '/'
-                    if ($normalizedRelativePath -like $normalizedExcludePattern) {
-                        Write-Verbose "-Exclude パス一致: '$relativePath'"
+                    # 小文字にして -like 比較
+                    $patternLower = $excludePattern.ToLower() -replace '\\','/'
+                    $normalizedPathLower = $currentItemPathLower -replace '\\','/'
+                    if ($normalizedPathLower -like $patternLower) {
+                        Write-Verbose "-Exclude パス一致: '$currentItemPath'"
                         $isExcluded = $true
                         break
                     }
@@ -240,16 +263,16 @@ try {
             foreach ($ignorePattern in $ignoreFilePatterns) {
                 if ($ignorePattern -notmatch '[\\/]' ) {
                     if ($item.Name -like $ignorePattern) {
-                        Write-Verbose "IgnoreFile 名前一致: '$relativePath'"
+                        Write-Verbose "IgnoreFile 名前一致: '$currentItemPath'"
                         $isExcluded = $true
                         break
                     }
                 }
                 else {
-                    $normalizedRelativePath = $relativePath -replace '\\', '/'
-                    $normalizedIgnorePattern = $ignorePattern -replace '\\', '/'
-                    if ($normalizedRelativePath -like $normalizedIgnorePattern) {
-                        Write-Verbose "IgnoreFile パス一致: '$relativePath'"
+                    $ignorePatLower = $ignorePattern.ToLower() -replace '\\','/'
+                    $normalizedPathLower = $currentItemPathLower -replace '\\','/'
+                    if ($normalizedPathLower -like $ignorePatLower) {
+                        Write-Verbose "IgnoreFile パス一致: '$currentItemPath'"
                         $isExcluded = $true
                         break
                     }
@@ -262,38 +285,39 @@ try {
         if ($PSBoundParameters.ContainsKey('IncludeOnly')) {
             $isIncluded = $false
             foreach ($includePattern in $includeOnlyPatterns) {
-                if ($includePattern -notmatch '[\\/]') {
+                if ($includePattern -notmatch '[\\/]' ) {
+                    # 名前だけ
                     if ($item.Name -like $includePattern) {
                         $isIncluded = $true
                         break
                     }
                 }
                 else {
-                    $normalizedRelativePath = $relativePath -replace '\\', '/'
-                    $normalizedIncludePattern = $includePattern -replace '\\', '/'
-                    if ($normalizedRelativePath -like $normalizedIncludePattern) {
+                    $incPatLower = $includePattern.ToLower() -replace '\\','/'
+                    $normalizedPathLower = $currentItemPathLower -replace '\\','/'
+                    if ($normalizedPathLower -like $incPatLower) {
                         $isIncluded = $true
                         break
                     }
                 }
             }
             if (-not $isIncluded) {
-                Write-Verbose "-IncludeOnly 対象外: '$relativePath'"
+                Write-Verbose "-IncludeOnly 対象外: '$currentItemPath'"
                 continue
             }
         }
 
-        # (e) バイナリ除外チェック (ファイルのみ対象)
-        if (-not $isContainer -and $ExcludeBinary) {
-            $extension = $item.Extension.ToLower()
-            if ($binaryExtensions -contains $extension) {
-                Write-Verbose "バイナリ除外: '$relativePath' (拡張子: $extension)"
+        # (e) -ExcludeBinary (ファイルのみ対象)
+        if (-not $item.PSIsContainer -and $ExcludeBinary) {
+            $ext = $item.Extension.ToLower()
+            if ($binaryExtensions -contains $ext) {
+                Write-Verbose "バイナリ拡張子除外: '$currentItemPath'"
                 continue
             }
         }
 
         # 振り分け
-        if ($isContainer) {
+        if ($item.PSIsContainer) {
             $allDirectoryPaths += $currentItemPath
         }
         else {
@@ -312,7 +336,7 @@ catch {
     exit 1
 }
 
-# -- 5. Markdown生成 --
+# -- 6. Markdown生成 --
 Write-Verbose "Markdown生成を開始します..."
 $markdownContent = @()
 
@@ -329,34 +353,39 @@ $markdownContent += ""
 $markdownContent += '```'
 $markdownContent += '.'
 
-# ディレクトリとファイルを合わせてソートし、1 つずつ階層表示
+# ディレクトリとファイルをまとめてソートし、階層表示
 $allItemsForStructure = $allDirectoryPaths + $allFilePaths | Sort-Object
 $structureLookup = @{}
 
 foreach ($itemPath in $allItemsForStructure) {
 
-    # 先ほどと同じロジックで relativePath を生成
-    $tmpPath = ''
-    if ($itemPath.StartsWith($absolutePath)) {
-        $tmpPath = $itemPath.Substring($absolutePath.Length)
-    } else {
-        $tmpPath = $itemPath
+    # パスを小文字化してルートと比較
+    $itemPathLower = $itemPath.ToLower()
+    if ($itemPathLower.StartsWith($absolutePathLower)) {
+        # Substring で差分だけ抜く
+        $rel = $itemPath.Substring($absolutePath.Length)
     }
-    $tmpPath = $tmpPath -replace '^[\\/]+',''
-    if ($tmpPath) {
-        $tmpPath = '.\' + $tmpPath
-    } else {
-        $tmpPath = '.'
+    else {
+        # 何らかの理由でStartsWith失敗(ドライブ異なる等)
+        $rel = $itemPath
     }
 
-    # 分割
-    $parts = $tmpPath -split '[\\/]' | Where-Object { $_ }
+    # 先頭の \ / を除去
+    $rel = $rel -replace '^[\\/]+',''
+    if ($rel) {
+        $rel = '.\' + $rel
+    }
+    else {
+        $rel = '.'
+    }
+
+    # ツリー表示用
+    $parts = $rel -split '[\\/]' | Where-Object { $_ }
     $currentIndent = ""
     $currentPathKeyPrefix = ""
 
     for ($i = 0; $i -lt $parts.Length; $i++) {
         $part = $parts[$i]
-        # 重複防止用キー作成
         $currentPathKey = "$($currentPathKeyPrefix)\$($part)"
 
         if (-not $structureLookup.ContainsKey($currentPathKey)) {
@@ -382,11 +411,13 @@ $totalFiles = $allFilePaths.Count
 
 foreach ($filePath in $allFilePaths) {
     $fileCounter++
-    # 再度、relativePath を作る
-    $tmpRel = ''
-    if ($filePath.StartsWith($absolutePath)) {
+
+    # 相対パス生成(小文字比較)
+    $filePathLower = $filePath.ToLower()
+    if ($filePathLower.StartsWith($absolutePathLower)) {
         $tmpRel = $filePath.Substring($absolutePath.Length)
-    } else {
+    }
+    else {
         $tmpRel = $filePath
     }
     $tmpRel = $tmpRel -replace '^[\\/]+',''
@@ -398,11 +429,11 @@ foreach ($filePath in $allFilePaths) {
 
     Write-Verbose "($fileCounter/$totalFiles) 処理中: '$tmpRel'"
 
-    # ### `.\xxx\yyy`
-    $markdownContent += '### `' + $tmpRel + '`'
+    # 見出し
+    $markdownContent += "### ``$tmpRel``"
     $markdownContent += ""
 
-    # 拡張子で言語判定
+    # 拡張子でコードブロックの言語判定
     $extension = [System.IO.Path]::GetExtension($filePath).ToLower().TrimStart('.')
     $lang = switch ($extension) {
         'ps1'       { 'powershell' }
@@ -433,34 +464,88 @@ foreach ($filePath in $allFilePaths) {
 
     # コードブロック開始
     if ([string]::IsNullOrEmpty($lang)) {
-        # 言語名が無ければ単に ```
         $markdownContent += '```'
     }
     else {
-        # パーサ混乱防止のため、連結で書く
         $markdownContent += '```' + $lang
     }
 
+    # ファイル内容を取得
     try {
         $fileInfo = Get-Item -Path $filePath -ErrorAction Stop
         $maxFileSizeMB = 1
         if ($fileInfo.Length -gt ($maxFileSizeMB * 1024 * 1024)) {
+            # 1MB 超の場合
             $markdownContent += "// File content omitted because it exceeds $($maxFileSizeMB)MB"
             Write-Warning "ファイル '$tmpRel' は $($maxFileSizeMB)MB を超えるため内容は省略されました。"
         }
         else {
-            $fileContent = Get-Content -Path $filePath -Raw -Encoding UTF8 -ErrorAction Stop
-            if ($null -ne $fileContent) {
-                $markdownContent += $fileContent
+            # 1MB以下 => 先頭4KBを読んでテキスト判定
+            $sampleSize = 4096
+            [byte[]]$buffer = New-Object byte[] $sampleSize
+
+            $fs = [System.IO.File]::Open($filePath, 'Open', 'Read')
+            try {
+                $bytesRead = $fs.Read($buffer, 0, $sampleSize)
+            }
+            finally {
+                $fs.Close()
+            }
+
+            if ($bytesRead -gt 0) {
+                try {
+                    # UTF-8デコードを試みる
+                    $decodedSample = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $bytesRead)
+                    # 制御文字チェック
+                    $controlCount = 0
+                    $chars = $decodedSample.ToCharArray()
+                    foreach ($ch in $chars) {
+                        $code = [int][char]$ch
+                        # CR(13)/LF(10)/TAB(9) を除く0-31と127を制御文字とみなす
+                        if (
+                            ($code -lt 32 -and $code -notin 9,10,13) -or
+                            ($code -eq 127)
+                        ) {
+                            $controlCount++
+                        }
+                    }
+                    $totalLen = $chars.Length
+                    if ($totalLen -gt 0) {
+                        $controlRatio = $controlCount / $totalLen
+                        if ($controlRatio -ge 0.1) {
+                            # 10%以上制御文字 => 非テキスト扱い
+                            $markdownContent += "// Omitted content for non-text file: control characters ratio $($controlRatio.ToString('P1'))"
+                        }
+                        else {
+                            # テキストとして全文取得
+                            $fileContent = Get-Content -Path $filePath -Raw -Encoding UTF8 -ErrorAction Stop
+                            if ($null -ne $fileContent) {
+                                $markdownContent += $fileContent
+                            }
+                            else {
+                                $markdownContent += "// Empty file"
+                            }
+                        }
+                    }
+                    else {
+                        # 先頭が空文字列
+                        $markdownContent += "// Empty file"
+                    }
+                }
+                catch {
+                    # UTF-8で読めなかったら非テキスト
+                    $markdownContent += "// Omitted content for non-text file: UTF-8 decode error"
+                }
             }
             else {
+                # そもそも0バイト => 空ファイル
                 $markdownContent += "// Empty file"
             }
         }
     }
     catch {
         $markdownContent += "// Error reading file: $($_.Exception.Message)"
-        Write-Warning "ファイル '$tmpRel' の読み込み中にエラーが発生しました: $($_.Exception.Message)"
+        Write-Warning "ファイル '$tmpRel' の読み込み中にエラー: $($_.Exception.Message)"
     }
 
     # コードブロック終了
@@ -468,10 +553,10 @@ foreach ($filePath in $allFilePaths) {
     $markdownContent += ""
 }
 
-# -- 6. Markdownファイル書き込み --
+# -- 7. Markdownファイル書き込み --
 Write-Verbose "Markdown ファイル '$OutputFile' に書き込みます..."
 try {
-    # UTF-8 (BOM 無し) 指定
+    # UTF-8 (BOM 無し)で出力
     [System.IO.File]::WriteAllLines($OutputFile, $markdownContent, [System.Text.UTF8Encoding]::new($false))
     Write-Host "処理が完了しました。出力ファイル: '$OutputFile'"
 }
