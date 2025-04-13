@@ -16,18 +16,13 @@
 
 ## インストール
 
-### 方法1: 手動
-
-1.  `GenerateProjectContext.ps1` と `gpc.bat` をダウンロードします。
-2.  これらのファイルを、環境変数 `PATH` が通っている任意のディレクトリ（例: `C:\Users\YourUser\Scripts`）に配置します。
-3.  必要に応じて、PowerShellの実行ポリシーを設定します (後述の「注意点」を参照)。
-
-### 方法2: Makefile (Windows環境で `make` が利用可能な場合)
+### 方法1: Makefile (Windows環境で `make` が利用可能な場合)
 
 1.  リポジトリ全体をクローンまたはダウンロードします。
 2.  コマンドプロンプトまたはターミナルで、リポジトリのルートディレクトリに移動します。
 3.  `make` コマンドがインストールされていることを確認します (例: `choco install make` など)。
-4.  以下のコマンドを実行します:
+    1. installしていない場合は[こちら](https://chocolatey.org/install)
+4.  管理者権限でPowershellを開き以下のコマンドを実行します:
     ```bash
     make setup
     ```
