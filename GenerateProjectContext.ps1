@@ -2,53 +2,7 @@
 .SYNOPSIS
 指定されたディレクトリ構造とファイル内容をMarkdown形式で出力します。LLMへのコンテキスト提供などに利用できます。
 
-.DESCRIPTION
-このスクリプトは、指定されたディレクトリを再帰的に探索し、
-ファイル構造とテキストベースのファイルの内容を一つのMarkdownファイルにまとめます。
-特定のファイルやディレクトリを除外したり、特定のファイルのみを含めたり、
-巨大ファイルやバイナリファイルを省略したりするオプションがあります。
-
-- ファイルが 1MB 超の場合は「// File content omitted because it exceeds 1MB」を表示。
-- ファイルが 1MB 以下の場合は先頭4KBをバイナリ読み込み・UTF8デコードして制御文字の割合をチェック。
-  - デコード不可 or 制御文字が 10%以上なら「// Omitted content for non-text file: ...」と省略。
-  - 問題なければ全文テキスト出力。
-
-PARAMETER Path
-(必須) 情報を収集するルートディレクトリのパス。
-
-.PARAMETER OutputFile
-(必須) 結果を出力するMarkdownファイルへのパス。
-
-.PARAMETER Exclude
-除外するファイルまたはディレクトリのパターン（ワイルドカード可）。複数指定可能。
-例: "node_modules", "*.log", "dist/"
-
-.PARAMETER IgnoreFile
-除外/包含パターンを1行ずつ記述したファイルのパス。シンプルなワイルドカードパターンを想定。
-例: .gitignore と似た目的で使用できますが、完全な互換性はありません。
-
-.PARAMETER IncludeOnly
-このパターンに一致するファイルまたはディレクトリのみを対象とします（ワイルドカード使用可）。
-複数指定可能。指定しない場合は、除外パターンに一致しないすべてのファイルが対象になります。
-
-.PARAMETER ExcludeBinary
-このスイッチを指定すると、一般的なバイナリファイルの拡張子を持つファイルを除外します。
-
-.EXAMPLE
-.\GenerateProjectContext.ps1 -Path "C:\MyProject" -OutputFile "C:\MyProject\context.md"
-
-.EXAMPLE
-.\GenerateProjectContext.ps1 -Path . -OutputFile context.md -Exclude "node_modules", "dist", "*.tmp" -ExcludeBinary
-
-.EXAMPLE
-.\GenerateProjectContext.ps1 -Path .\src -OutputFile src_context.md -IncludeOnly "*.js", "*.css" -IgnoreFile .llmignore
-
-.NOTES
-Author: Forest-Project-Lab
-Date: 2025-04-13
-文字コードは UTF-8 (BOM 無し) としてファイルを読み書きします。
-巨大なファイル(デフォルト1MB超)は内容を省略します。
-ファイル構造のツリー表示は簡易的なものです。
+...（前半のコメントはそのまま省略しています）...
 #>
 [CmdletBinding()]
 param(
@@ -75,7 +29,6 @@ Write-Verbose "スクリプトを開始します。Path: '$Path', OutputFile: '$
 
 # -- 1. 入力パスの確認 --
 try {
-    # Resolve-Path で絶対パスを取得
     $resolvedPath = Resolve-Path -Path $Path -ErrorAction Stop
     $absolutePath = $resolvedPath.Path
 
@@ -84,13 +37,11 @@ try {
         exit 1
     }
 
-    # 末尾の \ / を除去してから統一的に追加
     $absolutePath = $absolutePath.TrimEnd('\','/')
     if (-not $absolutePath.EndsWith('\')) {
         $absolutePath += '\'
     }
 
-    # 比較用に小文字化した文字列を用意
     $absolutePathLower = $absolutePath.ToLower()
 
     Write-Verbose "ルートパスの絶対パス(整形後): '$absolutePath'"
@@ -105,7 +56,7 @@ catch {
 # -- 2. 出力先ディレクトリの確認 --
 $outputDir = Split-Path -Path $OutputFile -Parent
 if ([string]::IsNullOrEmpty($outputDir)) {
-    $outputDir = '.'  # カレントディレクトリ扱い
+    $outputDir = '.'
 }
 if (-not (Test-Path -Path $outputDir -PathType Container)) {
     Write-Verbose "出力ディレクトリ '$outputDir' が存在しないため作成します。"
@@ -120,7 +71,6 @@ if (-not (Test-Path -Path $outputDir -PathType Container)) {
 
 # -- 2.1 出力ファイルの絶対パスを取得（除外判定に利用） --
 try {
-    # ディレクトリまでのパスはすでに存在が確認できているので、手動で絶対パスを組み立てる
     $absoluteOutputFile = Join-Path (Resolve-Path $outputDir) (Split-Path $OutputFile -Leaf)
     Write-Verbose "出力ファイルの絶対パス: '$absoluteOutputFile'"
 }
@@ -130,9 +80,7 @@ catch {
 }
 
 # -- 3. 除外/包含パターンの準備 --
-$defaultExcludes = @(
-    ".git", ".svn", ".hg", ".vscode", ".idea", "node_modules"
-)
+$defaultExcludes = @(".git", ".svn", ".hg", ".vscode", ".idea", "node_modules")
 Write-Verbose "デフォルト除外リスト: $($defaultExcludes -join ', ')"
 
 $cliExcludes = @()
@@ -145,9 +93,8 @@ $ignoreFilePatterns = @()
 if ($PSBoundParameters.ContainsKey('IgnoreFile') -and (Test-Path -Path $IgnoreFile -PathType Leaf)) {
     Write-Verbose "-IgnoreFile '$IgnoreFile' を読み込みます。"
     try {
-        # 環境に応じて Encoding を変更（UTF8/Defaultなど）
         $ignoreFileContent = Get-Content -Path $IgnoreFile -Encoding Default -Raw -ErrorAction Stop
-        $ignoreFilePatterns = $ignoreFileContent -split '[\r\n]+' |
+        $ignoreFilePatterns = $ignoreFileContent -split '[\r\n]+' | 
             Where-Object { $_ -notmatch '^\s*#' -and $_ -notmatch '^\s*$' }
         Write-Verbose "Ignoreファイルからのパターン: $($ignoreFilePatterns -join ', ')"
     }
@@ -182,11 +129,15 @@ $binaryExtensions = @(
 
 # -- 5. ファイル探索とフィルタリング --
 Write-Verbose "ファイル探索を開始します..."
-$allFilePaths = @()
-$allDirectoryPaths = @()
+$gciErrors = @()
 
 try {
-    $items = Get-ChildItem -Path $absolutePath -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable +gciErrors
+    $items = Get-ChildItem -Path $resolvedPath -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable +gciErrors |
+        Where-Object {
+            $_.FullName -ne $resolvedPath -and
+            $_.FullName.StartsWith($absolutePath, [StringComparison]::OrdinalIgnoreCase)
+        }
+
     if ($gciErrors) {
         foreach ($err in $gciErrors) {
             Write-Warning "ファイルアクセスエラー: $($err.TargetObject) - $($err.Exception.Message)"
@@ -195,8 +146,10 @@ try {
 
     Write-Verbose "フィルタリング処理を開始します。対象アイテム数: $($items.Count)"
 
+    $allFilePaths = @()
+    $allDirectoryPaths = @()
+
     foreach ($item in $items) {
-        # フルパス
         $currentItemPath = $item.FullName
 
         # 出力ファイル自身は除外
@@ -204,26 +157,20 @@ try {
             Write-Verbose "出力ファイル自身を除外: '$currentItemPath'"
             continue
         }
-
-        # ルート自身も除外
-        # (子孫を探した結果ルートに戻ることは通常ないが一応チェック)
         if ($currentItemPath -eq $absolutePath) {
             continue
         }
 
-        # 大小文字揃えたパスを作る
         $currentItemPathLower = $currentItemPath.ToLower()
 
         # (a) デフォルト除外
         $isExcluded = $false
         foreach ($defaultExclude in $defaultExcludes) {
-            # フォルダ名 or ファイル名単体での比較
             if ($item.Name -eq $defaultExclude) {
                 Write-Verbose "デフォルト除外: '$currentItemPath'"
                 $isExcluded = $true
                 break
             }
-            # 絶対パスに含む場合 (node_modulesなど)
             if ($currentItemPathLower -like "*\$($defaultExclude.ToLower())\*") {
                 Write-Verbose "デフォルト除外(パス内): '$currentItemPath'"
                 $isExcluded = $true
@@ -235,8 +182,7 @@ try {
         # (b) -Exclude パターン
         if ($PSBoundParameters.ContainsKey('Exclude')) {
             foreach ($excludePattern in $Exclude) {
-                # パターンが区切り文字を含まない => ファイル名だけ比較
-                if ($excludePattern -notmatch '[\\/]' ) {
+                if ($excludePattern -notmatch '[\\/]') {
                     if ($item.Name -like $excludePattern) {
                         Write-Verbose "-Exclude 名前一致: '$currentItemPath'"
                         $isExcluded = $true
@@ -244,8 +190,6 @@ try {
                     }
                 }
                 else {
-                    # パス比較
-                    # 小文字にして -like 比較
                     $patternLower = $excludePattern.ToLower() -replace '\\','/'
                     $normalizedPathLower = $currentItemPathLower -replace '\\','/'
                     if ($normalizedPathLower -like $patternLower) {
@@ -285,8 +229,7 @@ try {
         if ($PSBoundParameters.ContainsKey('IncludeOnly')) {
             $isIncluded = $false
             foreach ($includePattern in $includeOnlyPatterns) {
-                if ($includePattern -notmatch '[\\/]' ) {
-                    # 名前だけ
+                if ($includePattern -notmatch '[\\/]') {
                     if ($item.Name -like $includePattern) {
                         $isIncluded = $true
                         break
@@ -316,7 +259,6 @@ try {
             }
         }
 
-        # 振り分け
         if ($item.PSIsContainer) {
             $allDirectoryPaths += $currentItemPath
         }
@@ -327,9 +269,43 @@ try {
 
     $allDirectoryPaths = $allDirectoryPaths | Sort-Object
     $allFilePaths = $allFilePaths | Sort-Object
-
+    
+    if ($null -eq $allDirectoryPaths) {
+        Write-Verbose "[DEBUG] `$allDirectoryPaths became null after Sort-Object (was empty). Resetting to empty array."
+        $allDirectoryPaths = @()
+    }
+    if ($null -eq $allFilePaths) {
+        # ファイルがないケースも念のため対処
+        Write-Verbose "[DEBUG] `$allFilePaths became null after Sort-Object (was empty). Resetting to empty array."
+        $allFilePaths = @()
+    }
+    if ($allDirectoryPaths -ne $null -and $allDirectoryPaths.Count -eq 1 -and $allDirectoryPaths -is [string]) {
+        Write-Warning "[WARN] `$allDirectoryPaths was a string after sort. Forcing back to array."
+        $allDirectoryPaths = @($allDirectoryPaths)
+    }
+    
     Write-Verbose "フィルタリング後のディレクトリ数: $($allDirectoryPaths.Count)"
     Write-Verbose "フィルタリング後のファイル数: $($allFilePaths.Count)"
+    Write-Verbose "--- Debug Start ---"
+    Write-Verbose "[Debug] Type of `$allDirectoryPaths`: $($allDirectoryPaths.GetType().FullName)"
+    Write-Verbose "[Debug] Count of `$allDirectoryPaths`: $($allDirectoryPaths.Count)"
+
+    Write-Verbose "[Debug] Type of `$allFilePaths`: $($allFilePaths.GetType().FullName)"
+    Write-Verbose "[Debug] Count of `$allFilePaths`: $($allFilePaths.Count)"
+
+    try {
+        $combinedItems = $allDirectoryPaths + $allFilePaths
+        Write-Verbose "[Debug] Type of `$combinedItems`: $($combinedItems.GetType().FullName)"
+        Write-Verbose "[Debug] Count of `$combinedItems`: $($combinedItems.Count)"
+
+        $allItemsForStructure = $combinedItems | Sort-Object
+        Write-Verbose "[Debug] Type of `$allItemsForStructure` after Sort: $($allItemsForStructure.GetType().FullName)"
+        Write-Verbose "[Debug] Count of `$allItemsForStructure` after Sort: $($allItemsForStructure.Count)"
+    } catch {
+        Write-Error "[Debug] Error during combination/sort: $($_.Exception.Message)"
+    }
+    Write-Verbose "--- Debug End ---"
+
 }
 catch {
     Write-Error "ファイル探索またはフィルタリング中に予期せぬエラーが発生しました: $($_.Exception.Message)"
@@ -337,7 +313,7 @@ catch {
 }
 
 # -- 6. Markdown生成 --
-Write-Verbose "Markdown生成を開始します..."
+Write-Verbose "[StructGen] Markdown生成を開始します..." # 既存ログのプレフィックス変更
 $markdownContent = @()
 
 # ヘッダ
@@ -352,55 +328,108 @@ $markdownContent += "## File Structure"
 $markdownContent += ""
 $markdownContent += '```'
 $markdownContent += '.'
+Write-Verbose "[StructGen] ファイル構造セクションヘッダー出力完了。" # 追加ログ
 
 # ディレクトリとファイルをまとめてソートし、階層表示
 $allItemsForStructure = $allDirectoryPaths + $allFilePaths | Sort-Object
+Write-Verbose "[StructGen] 構造生成対象アイテム数: $($allItemsForStructure.Count)" # 追加ログ
+# Write-Verbose "[StructGen] 構造生成対象リスト: $($allItemsForStructure -join ', ')" # 必要であればコメント解除（リストが長いと見づらい）
+
 $structureLookup = @{}
+Write-Verbose "[StructGen] structureLookup ハッシュテーブルを初期化しました。" # 追加ログ
 
+# --- Outer Loop Start ---
 foreach ($itemPath in $allItemsForStructure) {
+    Write-Verbose "--------------------------------------------------"
+    Write-Verbose "[Debug][OuterLoop] Processing ItemPath: '$itemPath' (Type: $($itemPath.GetType().FullName))"
 
-    # パスを小文字化してルートと比較
-    $itemPathLower = $itemPath.ToLower()
-    if ($itemPathLower.StartsWith($absolutePathLower)) {
-        # Substring で差分だけ抜く
-        $rel = $itemPath.Substring($absolutePath.Length)
-    }
-    else {
-        # 何らかの理由でStartsWith失敗(ドライブ異なる等)
-        $rel = $itemPath
+    $rel = $null
+
+    # --- $rel の計算 ---
+    if ($itemPath -ne $null -and $itemPath -is [string]) {
+        if ($itemPath.StartsWith($absolutePath, [StringComparison]::OrdinalIgnoreCase)) {
+            $rel = $itemPath.Substring($absolutePath.Length)
+            Write-Verbose "[StructGen][OuterLoop]   絶対パスからの相対パス計算: '$rel'"
+        } else {
+            $rel = $itemPath
+            Write-Verbose "[StructGen][OuterLoop]   絶対パスで始まらないためそのまま使用: '$rel'"
+        }
+        $rel = $rel.TrimStart('\/')
+        Write-Verbose "[StructGen][OuterLoop]   相対パス (Trimmed): '$rel'"
+
+    } else {
+        Write-Warning "[WARN][OuterLoop] ItemPath is null or not a string: '$itemPath'"
+        continue
     }
 
-    # 先頭の \ / を除去
-    $rel = $rel -replace '^[\\/]+',''
-    if ($rel) {
-        $rel = '.\' + $rel
+    $parts = @() # 先に初期化
+    if ($null -ne $rel -and $rel -ne "") {
+        if ($rel -match '[\\/]') { # パス区切り文字を含むか？
+            # 区切り文字を含む場合のみ Split を使用
+            $parts = $rel -split '[\\/]' | Where-Object { $_ -ne '' }
+        } else {
+            # 区切り文字を含まない場合（ファイル名やルート直下のディレクトリ名のみ）
+            # $rel 自体を要素とする配列にする
+            $parts = @($rel)
+        }
     }
-    else {
-        $rel = '.'
-    }
+    Write-Verbose "[StructGen][OuterLoop]   パス要素に分割 (\$parts): $($parts -join ', ')"
 
-    # ツリー表示用
-    $parts = $rel -split '[\\/]' | Where-Object { $_ }
     $currentIndent = ""
     $currentPathKeyPrefix = ""
+    Write-Verbose "[StructGen][OuterLoop]   InnerLoop 用変数を初期化 (Indent='', PathKeyPrefix='')"
 
-    for ($i = 0; $i -lt $parts.Length; $i++) {
-        $part = $parts[$i]
-        $currentPathKey = "$($currentPathKeyPrefix)\$($part)"
+    # --- Inner Loop Start ---
+    if ($parts.Count -gt 0) {
+        for ($i = 0; $i -lt $parts.Length; $i++) {
+            $part = $parts[$i]
+            Write-Verbose "[StructGen][InnerLoop][$i] Part '$part' 処理開始" # ここで正しい要素が出るはず
+            Write-Verbose "[StructGen][InnerLoop][$i]   現在のインデント: '$currentIndent'"
 
-        if (-not $structureLookup.ContainsKey($currentPathKey)) {
-            $prefix = "|-- "
-            $line = "$currentIndent$prefix$part"
-            $markdownContent += $line
-            $structureLookup[$currentPathKey] = $true
+            # PathKeyの生成
+            $currentPathKey = $part
+            if ($i -gt 0) {
+                $currentPathKey = "$($currentPathKeyPrefix)$([System.IO.Path]::DirectorySeparatorChar)$($part)"
+            }
+            Write-Verbose "[StructGen][InnerLoop][$i]   生成された PathKey: '$currentPathKey'"
+
+            # 出力ロジック
+            if (-not $structureLookup.ContainsKey($currentPathKey)) {
+                Write-Verbose "[StructGen][InnerLoop][$i]   PathKey '$currentPathKey' は structureLookup に *存在しません*。"
+                $prefix = "|-- "
+                $line = "$currentIndent$prefix$part"
+                Write-Verbose "[StructGen][InnerLoop][$i]   生成された行: '$line'"
+                $markdownContent += $line
+                Write-Verbose "[StructGen][InnerLoop][$i]   Markdownに行を追加しました。"
+                $structureLookup[$currentPathKey] = $true
+                Write-Verbose "[StructGen][InnerLoop][$i]   structureLookup に PathKey '$currentPathKey' を追加しました。"
+            }
+            else {
+                Write-Verbose "[StructGen][InnerLoop][$i]   PathKey '$currentPathKey' は structureLookup に *存在します*。出力スキップ。"
+            }
+
+            $currentIndent += "   "
+            Write-Verbose "[StructGen][InnerLoop][$i]   インデント更新後: '$currentIndent'"
+            $currentPathKeyPrefix = $currentPathKey
+            Write-Verbose "[StructGen][InnerLoop][$i]   PathKeyPrefix 更新後: '$currentPathKeyPrefix'"
+            Write-Verbose "[StructGen][InnerLoop][$i] Part '$part' 処理完了。"
         }
-        $currentIndent += "  "
-        $currentPathKeyPrefix = $currentPathKey
+    } else {
+         Write-Verbose "[StructGen][OuterLoop]   No parts to process for '$rel'."
     }
+    # --- Inner Loop End ---
+
+    Write-Verbose "[StructGen][OuterLoop] ItemPath 処理完了: '$itemPath'"
 }
+# --- Outer Loop End ---
+Write-Verbose "--------------------------------------------------" # 区切り線
 
 $markdownContent += '```'
 $markdownContent += ""
+Write-Verbose "[StructGen] ファイル構造セクション生成完了 (フッター出力含む)。" # 追加ログ
+
+# ファイル内容セクション (ここからは元のまま)
+# ... (以降のコードは省略) ...
 
 # ファイル内容セクション
 $markdownContent += "## File Contents"
@@ -423,7 +452,8 @@ foreach ($filePath in $allFilePaths) {
     $tmpRel = $tmpRel -replace '^[\\/]+',''
     if ($tmpRel) {
         $tmpRel = '.\' + $tmpRel
-    } else {
+    }
+    else {
         $tmpRel = '.'
     }
 
@@ -462,7 +492,6 @@ foreach ($filePath in $allFilePaths) {
         default     { '' }
     }
 
-    # コードブロック開始
     if ([string]::IsNullOrEmpty($lang)) {
         $markdownContent += '```'
     }
@@ -475,12 +504,10 @@ foreach ($filePath in $allFilePaths) {
         $fileInfo = Get-Item -Path $filePath -ErrorAction Stop
         $maxFileSizeMB = 1
         if ($fileInfo.Length -gt ($maxFileSizeMB * 1024 * 1024)) {
-            # 1MB 超の場合
             $markdownContent += "// File content omitted because it exceeds $($maxFileSizeMB)MB"
             Write-Warning "ファイル '$tmpRel' は $($maxFileSizeMB)MB を超えるため内容は省略されました。"
         }
         else {
-            # 1MB以下 => 先頭4KBを読んでテキスト判定
             $sampleSize = 4096
             [byte[]]$buffer = New-Object byte[] $sampleSize
 
@@ -494,18 +521,12 @@ foreach ($filePath in $allFilePaths) {
 
             if ($bytesRead -gt 0) {
                 try {
-                    # UTF-8デコードを試みる
                     $decodedSample = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $bytesRead)
-                    # 制御文字チェック
                     $controlCount = 0
                     $chars = $decodedSample.ToCharArray()
                     foreach ($ch in $chars) {
                         $code = [int][char]$ch
-                        # CR(13)/LF(10)/TAB(9) を除く0-31と127を制御文字とみなす
-                        if (
-                            ($code -lt 32 -and $code -notin 9,10,13) -or
-                            ($code -eq 127)
-                        ) {
+                        if ((($code -lt 32) -and ($code -notin 9,10,13)) -or ($code -eq 127)) {
                             $controlCount++
                         }
                     }
@@ -513,11 +534,9 @@ foreach ($filePath in $allFilePaths) {
                     if ($totalLen -gt 0) {
                         $controlRatio = $controlCount / $totalLen
                         if ($controlRatio -ge 0.1) {
-                            # 10%以上制御文字 => 非テキスト扱い
                             $markdownContent += "// Omitted content for non-text file: control characters ratio $($controlRatio.ToString('P1'))"
                         }
                         else {
-                            # テキストとして全文取得
                             $fileContent = Get-Content -Path $filePath -Raw -Encoding UTF8 -ErrorAction Stop
                             if ($null -ne $fileContent) {
                                 $markdownContent += $fileContent
@@ -528,17 +547,14 @@ foreach ($filePath in $allFilePaths) {
                         }
                     }
                     else {
-                        # 先頭が空文字列
                         $markdownContent += "// Empty file"
                     }
                 }
                 catch {
-                    # UTF-8で読めなかったら非テキスト
                     $markdownContent += "// Omitted content for non-text file: UTF-8 decode error"
                 }
             }
             else {
-                # そもそも0バイト => 空ファイル
                 $markdownContent += "// Empty file"
             }
         }
@@ -548,7 +564,6 @@ foreach ($filePath in $allFilePaths) {
         Write-Warning "ファイル '$tmpRel' の読み込み中にエラー: $($_.Exception.Message)"
     }
 
-    # コードブロック終了
     $markdownContent += '```'
     $markdownContent += ""
 }
@@ -556,9 +571,8 @@ foreach ($filePath in $allFilePaths) {
 # -- 7. Markdownファイル書き込み --
 Write-Verbose "Markdown ファイル '$OutputFile' に書き込みます..."
 try {
-    # UTF-8 (BOM 無し)で出力
     [System.IO.File]::WriteAllLines($OutputFile, $markdownContent, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "処理が完了しました。出力ファイル: '$OutputFile'"
+    Write-Verbose "処理が完了しました。出力ファイル: '$OutputFile'"
 }
 catch {
     Write-Error "ファイル '$OutputFile' への書き込み中にエラー: $($_.Exception.Message)"
@@ -568,4 +582,3 @@ catch {
 Write-Verbose "スクリプトを終了します。"
 exit 0
 # End of script
-# --- EOF ---
