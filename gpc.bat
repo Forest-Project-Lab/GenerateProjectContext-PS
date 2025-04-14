@@ -1,13 +1,18 @@
 @echo off
-REM このバッチファイルは GenerateProjectContext.ps1 を簡単に実行するためのラッパーです。
-REM PowerShellスクリプトと同じディレクトリに配置することを想定しています。
 
-REM PowerShellスクリプトのパスを取得 (%~dp0 はこのバッチファイル自身のディレクトリ)
-set SCRIPT_PATH="%~dp0GenerateProjectContext.ps1"
+rem --- (1) chcp の出力から数字だけを取り出して OLDCP に代入 ---
+for /f "tokens=* delims=" %%I in ('chcp ^| findstr /r "[0-9][0-9]*"') do (
+    for %%J in (%%I) do set "OLDCP=%%J"
+)
 
-REM PowerShellを実行し、スクリプトに引数をすべて渡す (%*)
-REM ExecutionPolicy を RemoteSigned に設定して実行 (環境によっては Bypass が必要かも)
-powershell -ExecutionPolicy RemoteSigned -File %SCRIPT_PATH% %*
+rem --- (2) とりあえず UTF-8 に変更 ---
+chcp 65001 >nul
 
-REM エラーレベルを保持して終了 (オプション)
+rem --- (3) PowerShell の実行 ---
+powershell -NoProfile -ExecutionPolicy RemoteSigned -Command ^
+  "try { $oldEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & '%~dp0GenerateProjectContext.ps1' %* } finally { [Console]::OutputEncoding = $oldEnc }"
+
+rem --- (4) 終わったら元のコードページへ戻す ---
+chcp %OLDCP% >nul
+
 exit /b %errorlevel%
